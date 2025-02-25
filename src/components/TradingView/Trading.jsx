@@ -64,7 +64,7 @@ const Trading = () => {
       <div className="max-w-[98%] mx-auto bg-white rounded-xl shadow-lg overflow-hidden">
         <div className="border-b border-gray-200 p-6">
           <div className="flex justify-between items-center mb-4">
-            <h1 className="text-2xl font-bold text-gray-900">BTC/USDT Advanced Chart</h1>
+            <h1 className="text-2xl font-bold text-gray-900">BINANACE_Chart</h1>
             <div className="text-sm text-gray-600">
               Use tools below for analysis
             </div>

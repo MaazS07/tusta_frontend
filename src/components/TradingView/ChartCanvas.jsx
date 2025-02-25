@@ -20,13 +20,38 @@ const ChartCanvas = ({
   const [shapes, setShapes] = useState([]);
   const [trendLines, setTrendLines] = useState([]);
   const [selectedShape, setSelectedShape] = useState(null);
+  const [availablePairs, setAvailablePairs] = useState([]);
+  const [selectedPair, setSelectedPair] = useState('BTCUSDT');
+  const [crosshairPosition, setCrosshairPosition] = useState(null);
+
+  // Fetch available trading pairs from Binance
+  useEffect(() => {
+    const fetchAvailablePairs = async () => {
+      try {
+        const response = await fetch('https://api.binance.com/api/v3/exchangeInfo');
+        const data = await response.json();
+        
+        const pairs = data.symbols
+          .filter(symbol => symbol.status === 'TRADING' && symbol.quoteAsset === 'USDT')
+          .map(symbol => symbol.symbol);
+        
+        setAvailablePairs(pairs);
+      } catch (error) {
+        console.error('Failed to fetch available pairs:', error);
+        // Set some default pairs as fallback
+        setAvailablePairs(['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'ADAUSDT', 'SOLUSDT']);
+      }
+    };
+
+    fetchAvailablePairs();
+  }, []);
 
   // Fetch data from API
   useEffect(() => {
     const fetchData = async () => {
       try {
         const response = await fetch(
-          `https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=${timeframe}&limit=100`
+          `https://api.binance.com/api/v3/klines?symbol=${selectedPair}&interval=${timeframe}&limit=100`
         );
         const rawData = await response.json();
         
@@ -50,7 +75,7 @@ const ChartCanvas = ({
     fetchData();
     const interval = setInterval(fetchData, 10000);
     return () => clearInterval(interval);
-  }, [timeframe]);
+  }, [timeframe, selectedPair]);
 
   const getDateFromX = (x) => {
     if (!canvasRef.current || !data.length) return null;
@@ -68,6 +93,13 @@ const ChartCanvas = ({
     const priceRange = maxPrice - minPrice;
     
     return maxPrice - (y / chartHeight) * priceRange;
+  };
+
+  const getIndexFromX = (x) => {
+    if (!canvasRef.current || !data.length) return -1;
+    const candleWidth = (canvasRef.current.width / data.length) * chartState.scale;
+    const index = Math.floor((x - chartState.offset) / candleWidth);
+    return index >= 0 && index < data.length ? index : -1;
   };
 
   const sendCoordinatesToBackend = async (startPoint, endPoint) => {
@@ -105,16 +137,112 @@ const ChartCanvas = ({
           end: { date: endDate, price: endPrice }
         });
         setIsModalOpen(true);
-
-        // Reset shapes and trend lines after modal is opened
+        
+        // Reset shapes and trend lines immediately
         setShapes([]);
         setTrendLines([]);
       } else {
         toast.error('Failed to send coordinates');
       }
     } catch (error) {
-      toast.error('Failed to connect to server');
+      // Making the backend response optional
+      console.error('Failed to connect to backend server:', error);
+      // Still set the selected range and open modal even if backend fails
+      setSelectedRange({ 
+        start: { date: startDate, price: startPrice },
+        end: { date: endDate, price: endPrice }
+      });
+      setIsModalOpen(true);
+      
+      // Reset shapes and trend lines here too in case of backend failure
+      setShapes([]);
+      setTrendLines([]);
     }
+  };
+
+  const drawCrosshair = (ctx, x, y) => {
+    const { width, height } = canvasRef.current;
+    const chartHeight = height * 0.7;
+    
+    // Save current context state
+    ctx.save();
+    
+    // Set dashed line style
+    ctx.setLineDash([5, 5]);
+    ctx.strokeStyle = chartState.theme === 'light' ? 'rgba(0, 0, 0, 0.5)' : 'rgba(255, 255, 255, 0.5)';
+    ctx.lineWidth = 0.5;
+    
+    // Draw vertical line
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.lineTo(x, height);
+    ctx.stroke();
+    
+    // Draw horizontal line
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
+    ctx.stroke();
+    
+    // If inside chart area, show price and date labels
+    if (y <= chartHeight) {
+      const price = getPriceFromY(y);
+      const date = getDateFromX(x);
+      const index = getIndexFromX(x);
+      
+      if (price && date && index >= 0) {
+        // Draw price label on y-axis
+        ctx.setLineDash([]);
+        ctx.fillStyle = chartState.theme === 'light' ? 'rgba(0, 0, 0, 0.8)' : 'rgba(40, 40, 40, 0.8)';
+        ctx.fillRect(0, y - 10, 60, 20);
+        ctx.fillStyle = chartState.theme === 'light' ? '#ffffff' : '#e0e0e0';
+        ctx.font = '10px Arial';
+        ctx.textAlign = 'center';
+        ctx.fillText(price.toFixed(2), 30, y + 4);
+        
+        // Draw date label on x-axis
+        ctx.fillStyle = chartState.theme === 'light' ? 'rgba(0, 0, 0, 0.8)' : 'rgba(40, 40, 40, 0.8)';
+        ctx.fillRect(x - 50, height - 20, 100, 20);
+        ctx.fillStyle = chartState.theme === 'light' ? '#ffffff' : '#e0e0e0';
+        ctx.textAlign = 'center';
+        ctx.fillText(date.toLocaleString(), x, height - 7);
+        
+        // Draw tooltip with OHLC data near cursor
+        if (index >= 0 && index < data.length) {
+          const candle = data[index];
+          const tooltipWidth = 120;
+          const tooltipHeight = 80;
+          let tooltipX = x + 10;
+          let tooltipY = y + 10;
+          
+          // Adjust tooltip position if it would go off-screen
+          if (tooltipX + tooltipWidth > width) tooltipX = x - tooltipWidth - 10;
+          if (tooltipY + tooltipHeight > height) tooltipY = y - tooltipHeight - 10;
+          
+          // Draw tooltip background
+          ctx.fillStyle = chartState.theme === 'light' ? 'rgba(255, 255, 255, 0.9)' : 'rgba(30, 30, 30, 0.9)';
+          ctx.strokeStyle = chartState.theme === 'light' ? 'rgba(0, 0, 0, 0.2)' : 'rgba(255, 255, 255, 0.2)';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([]);
+          ctx.fillRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
+          ctx.strokeRect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
+          
+          // Draw tooltip content
+          ctx.fillStyle = chartState.theme === 'light' ? '#333333' : '#e0e0e0';
+          ctx.textAlign = 'left';
+          ctx.font = 'bold 11px Arial';
+          ctx.fillText(selectedPair, tooltipX + 5, tooltipY + 15);
+          ctx.font = '11px Arial';
+          ctx.fillText(`O: ${candle.open.toFixed(2)}`, tooltipX + 5, tooltipY + 30);
+          ctx.fillText(`H: ${candle.high.toFixed(2)}`, tooltipX + 5, tooltipY + 45);
+          ctx.fillText(`L: ${candle.low.toFixed(2)}`, tooltipX + 5, tooltipY + 60);
+          ctx.fillText(`C: ${candle.close.toFixed(2)}`, tooltipX + 5, tooltipY + 75);
+        }
+      }
+    }
+    
+    // Restore context
+    ctx.restore();
   };
 
   const drawChart = () => {
@@ -173,11 +301,23 @@ const ChartCanvas = ({
       ctx.stroke();
     }
 
-    // Draw candles
+    // Draw price scales on Y-axis
     const prices = data.flatMap(d => [d.high, d.low]);
     const maxPrice = Math.max(...prices);
     const minPrice = Math.min(...prices);
     const priceRange = maxPrice - minPrice;
+    
+    ctx.fillStyle = colors.text;
+    ctx.font = '10px Arial';
+    ctx.textAlign = 'left';
+    
+    for (let i = 0; i <= 5; i++) {
+      const y = i * (chartHeight / 5);
+      const price = maxPrice - (i / 5) * priceRange;
+      ctx.fillText(price.toFixed(2), 5, y + 10);
+    }
+
+    // Draw candles
     const candleWidth = (width / data.length) * chartState.scale;
     const xOffset = chartState.offset;
 
@@ -203,6 +343,23 @@ const ChartCanvas = ({
       const bodyWidth = Math.max(candleWidth * 0.8, 1);
       ctx.fillRect(x + (candleWidth - bodyWidth) / 2, bodyTop, bodyWidth, bodyBottom - bodyTop);
     });
+
+    // Draw time labels on X-axis
+    ctx.fillStyle = colors.text;
+    ctx.font = '10px Arial';
+    ctx.textAlign = 'center';
+    
+    // Only draw every nth label to avoid overcrowding
+    const labelStep = Math.max(1, Math.floor(data.length / 10));
+    
+    for (let i = 0; i < data.length; i += labelStep) {
+      const x = i * candleWidth + xOffset;
+      if (x >= 0 && x <= width) {
+        const date = data[i].time;
+        const dateStr = date.toLocaleDateString();
+        ctx.fillText(dateStr, x, height - 5);
+      }
+    }
 
     // Draw technical indicators
     if (indicators.showMA) {
@@ -277,11 +434,16 @@ const ChartCanvas = ({
         ctx.stroke();
       }
     }
+    
+    // Draw crosshair at current mouse position
+    if (crosshairPosition && (currentTool === 'crosshair' || currentTool === 'select')) {
+      drawCrosshair(ctx, crosshairPosition.x, crosshairPosition.y);
+    }
   };
 
   useEffect(() => {
     drawChart();
-  }, [data, chartState, selectionStart, mousePosition, shapes, trendLines, indicators]);
+  }, [data, chartState, selectionStart, mousePosition, shapes, trendLines, indicators, crosshairPosition, selectedPair]);
 
   const handleMouseDown = (e) => {
     const rect = canvasRef.current.getBoundingClientRect();
@@ -311,6 +473,9 @@ const ChartCanvas = ({
     const rect = canvasRef.current.getBoundingClientRect();
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
+    
+    // Update crosshair position
+    setCrosshairPosition({ x, y });
 
     if (selectedShape && currentTool === 'select') {
       // Move selected shape
@@ -333,6 +498,7 @@ const ChartCanvas = ({
   const handleMouseUp = (e) => {
     if (selectionStart !== null && mousePosition !== null) {
       if (['rectangle', 'ellipse'].includes(currentTool)) {
+        // Create temporary shape references
         const newShape = {
           id: Date.now(),
           type: currentTool,
@@ -341,16 +507,41 @@ const ChartCanvas = ({
           width: mousePosition.x - selectionStart.x,
           height: mousePosition.y - selectionStart.y
         };
+        
+        // Add shape temporarily for visual feedback
         setShapes([...shapes, newShape]);
-        sendCoordinatesToBackend(selectionStart, mousePosition);
+        
+        // Send coordinates to backend and reset shapes regardless of response
+        sendCoordinatesToBackend(selectionStart, mousePosition)
+          .catch(error => {
+            // Silently catch error to make backend optional
+            console.warn('Backend connection failed, but continuing with local operation');
+            
+            // Reset shapes here too in case of failure
+            setShapes([]);
+            setTrendLines([]);
+          });
       } else if (currentTool === 'trendline') {
+        // Create temporary trendline reference
         const newLine = {
           id: Date.now(),
           start: selectionStart,
           end: mousePosition
         };
+        
+        // Add trendline temporarily for visual feedback
         setTrendLines([...trendLines, newLine]);
-        sendCoordinatesToBackend(selectionStart, mousePosition);
+        
+        // Send coordinates to backend and reset trendlines regardless of response
+        sendCoordinatesToBackend(selectionStart, mousePosition)
+          .catch(error => {
+            // Silently catch error to make backend optional
+            console.warn('Backend connection failed, but continuing with local operation');
+            
+            // Reset trendlines here too in case of failure
+            setShapes([]);
+            setTrendLines([]);
+          });
       }
     }
     
@@ -369,24 +560,71 @@ const ChartCanvas = ({
     }));
   };
 
+  const handlePairChange = (e) => {
+    setSelectedPair(e.target.value);
+    setIsLoading(true);
+    setChartState(prev => ({
+      ...prev,
+      offset: 0,
+      scale: 1
+    }));
+    
+    // Reset any shapes or trendlines when changing pairs
+    setShapes([]);
+    setTrendLines([]);
+  };
+
+  const handleMouseLeave = () => {
+    setCrosshairPosition(null);
+    handleMouseUp();
+  };
+
   return (
-    <div className="relative h-[600px] w-full
-    ">
+    <div className="relative h-[600px] w-full">
+      <div className="flex items-center mb-2 p-2 bg-gray-100 dark:bg-gray-800 rounded">
+        <label htmlFor="pair-select" className="mr-2 text-sm font-medium">Trading Pair:</label>
+        <select 
+          id="pair-select"
+          value={selectedPair}
+          onChange={handlePairChange}
+          className="p-1 border rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+        >
+          {availablePairs.length > 0 ? (
+            availablePairs.map(pair => (
+              <option key={pair} value={pair}>{pair}</option>
+            ))
+          ) : (
+            <option value="BTCUSDT">BTCUSDT</option>
+          )}
+        </select>
+        <div className="ml-4 text-sm">
+          <span className="font-medium mr-1">Current:</span>
+          {data.length > 0 ? (
+            <span className={data[data.length - 1].close > data[data.length - 1].open ? 'text-green-500' : 'text-red-500'}>
+              {data[data.length - 1].close.toFixed(2)} USD
+            </span>
+          ) : (
+            'Loading...'
+          )}
+        </div>
+      </div>
+
       {isLoading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-75">
+        <div className="absolute inset-0 flex items-center justify-center bg-white dark:bg-gray-900 bg-opacity-75 dark:bg-opacity-75 z-10">
           <div className="animate-spin rounded-full h-12 w-12 border-4 border-blue-500 border-t-transparent"></div>
         </div>
       )}
+      
       <canvas
-  ref={canvasRef}
-  className="w-[90vw] h-[80vh] cursor-crosshair"
-  onMouseDown={handleMouseDown}
-  onMouseMove={handleMouseMove}
-  onMouseUp={handleMouseUp}
-  onMouseLeave={handleMouseUp}
-  onWheel={handleWheel}
-  style={{ touchAction: 'none' }}  // Add this line
-/>
+        ref={canvasRef}
+        className="w-[100vw] h-[80vh] cursor-crosshair"
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onMouseLeave={handleMouseLeave}
+        onWheel={handleWheel}
+        style={{ touchAction: 'none' }}
+      />
     </div>
   );
 };
